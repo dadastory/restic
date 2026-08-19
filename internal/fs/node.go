@@ -295,7 +295,13 @@ func mkfifo(path string, mode uint32) (err error) {
 
 // NodeRestoreMetadata restores node metadata
 func NodeRestoreMetadata(node *data.Node, path string, warn func(msg string), xattrSelectFilter func(xattrName string) bool, ownershipByName bool) error {
-	err := nodeRestoreMetadata(node, path, warn, xattrSelectFilter, ownershipByName)
+	return NodeRestoreMetadataWithOwnership(node, path, warn, xattrSelectFilter, ownershipByName, true)
+}
+
+// NodeRestoreMetadataWithOwnership restores node metadata and optionally skips
+// ownership changes for service-managed restore destinations.
+func NodeRestoreMetadataWithOwnership(node *data.Node, path string, warn func(msg string), xattrSelectFilter func(xattrName string) bool, ownershipByName bool, restoreOwnership bool) error {
+	err := nodeRestoreMetadata(node, path, warn, xattrSelectFilter, ownershipByName, restoreOwnership)
 	if err != nil {
 		// It is common to have permission errors for folders like /home
 		// unless you're running as root, so ignore those.
@@ -310,11 +316,13 @@ func NodeRestoreMetadata(node *data.Node, path string, warn func(msg string), xa
 	return err
 }
 
-func nodeRestoreMetadata(node *data.Node, path string, warn func(msg string), xattrSelectFilter func(xattrName string) bool, ownershipByName bool) error {
+func nodeRestoreMetadata(node *data.Node, path string, warn func(msg string), xattrSelectFilter func(xattrName string) bool, ownershipByName bool, restoreOwnership bool) error {
 	var firsterr error
 
-	if err := lchown(path, node, ownershipByName); err != nil {
-		firsterr = errors.WithStack(err)
+	if restoreOwnership {
+		if err := lchown(path, node, ownershipByName); err != nil {
+			firsterr = errors.WithStack(err)
+		}
 	}
 
 	if err := nodeRestoreExtendedAttributes(node, path, xattrSelectFilter); err != nil {

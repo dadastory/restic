@@ -44,6 +44,10 @@ type Options struct {
 	Overwrite       OverwriteBehavior
 	Delete          bool
 	OwnershipByName bool
+	// SkipOwnership leaves file ownership unchanged while restoring content and
+	// other metadata. Service-managed staging restores must not require a
+	// matching numeric UID in a rootless API container.
+	SkipOwnership bool
 }
 
 type OverwriteBehavior int
@@ -296,7 +300,7 @@ func (res *Restorer) restoreNodeMetadataTo(node *data.Node, target, location str
 		return nil
 	}
 	debug.Log("restoreNodeMetadata %v %v %v", node.Name, target, location)
-	err := fs.NodeRestoreMetadata(node, target, res.Warn, res.XattrSelectFilter, res.opts.OwnershipByName)
+	err := fs.NodeRestoreMetadataWithOwnership(node, target, res.Warn, res.XattrSelectFilter, res.opts.OwnershipByName, !res.opts.SkipOwnership)
 	if err != nil {
 		debug.Log("node.RestoreMetadata(%s) error %v", target, err)
 	}

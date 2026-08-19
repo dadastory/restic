@@ -881,79 +881,97 @@ func (arch *Archiver) stopWorkers() {
 
 // Snapshot saves several targets and returns a snapshot.
 func (arch *Archiver) Snapshot(ctx context.Context, targets []string, opts SnapshotOptions) (*data.Snapshot, restic.ID, *Summary, error) {
+	var sn *data.Snapshot
+	var summary *Summary
+	err := arch.Repo.WithBlobUploader(ctx, func(ctx context.Context, uploader restic.BlobSaverWithAsync) error {
+		var err error
+		sn, summary, err = arch.SnapshotWithUploader(ctx, targets, opts, uploader)
+		return err
+	})
+	if err != nil {
+		return nil, restic.ID{}, nil, err
+	}
+	if sn == nil {
+		return nil, restic.ID{}, summary, nil
+	}
+
+	id, err := data.SaveSnapshot(ctx, arch.Repo, sn)
+	if err != nil {
+		return nil, restic.ID{}, nil, err
+	}
+
+	return sn, id, summary, nil
+}
+
+// SnapshotWithUploader builds one independent snapshot tree using a
+// caller-owned uploader. The caller must flush the uploader successfully
+// before persisting the returned snapshot metadata.
+func (arch *Archiver) SnapshotWithUploader(ctx context.Context, targets []string, opts SnapshotOptions, uploader restic.BlobSaverWithAsync) (*data.Snapshot, *Summary, error) {
 	arch.summary = &Summary{
 		BackupStart: opts.BackupStart,
+	}
+	if uploader == nil {
+		return nil, nil, errors.New("snapshot uploader is nil")
 	}
 
 	cleanTargets, err := resolveRelativeTargets(arch.FS, targets)
 	if err != nil {
-		return nil, restic.ID{}, nil, err
+		return nil, nil, err
 	}
 
 	atree, err := newTree(arch.FS, cleanTargets)
 	if err != nil {
-		return nil, restic.ID{}, nil, err
+		return nil, nil, err
 	}
 
 	var rootTreeID restic.ID
 
-	err = arch.Repo.WithBlobUploader(ctx, func(ctx context.Context, uploader restic.BlobSaverWithAsync) error {
-		wg, wgCtx := errgroup.WithContext(ctx)
-		start := time.Now()
+	wg, wgCtx := errgroup.WithContext(ctx)
+	start := time.Now()
+	wg.Go(func() error {
+		arch.runWorkers(wgCtx, wg, uploader)
 
-		wg.Go(func() error {
-			arch.runWorkers(wgCtx, wg, uploader)
-
-			debug.Log("starting snapshot")
-			fn, nodeCount, err := arch.saveTree(wgCtx, "/", atree, arch.loadParentTree(wgCtx, opts.ParentSnapshot), func(_ *data.Node, is ItemStats) {
-				arch.trackItem("/", nil, nil, is, time.Since(start))
-			})
-			if err != nil {
-				return err
-			}
-
-			fnr := fn.take(wgCtx)
-			if fnr.err != nil {
-				return fnr.err
-			}
-
-			if wgCtx.Err() != nil {
-				return wgCtx.Err()
-			}
-
-			if nodeCount == 0 {
-				return errors.New("snapshot is empty")
-			}
-
-			rootTreeID = *fnr.node.Subtree
-			arch.stopWorkers()
-			return nil
+		debug.Log("starting snapshot")
+		fn, nodeCount, err := arch.saveTree(wgCtx, "/", atree, arch.loadParentTree(wgCtx, opts.ParentSnapshot), func(_ *data.Node, is ItemStats) {
+			arch.trackItem("/", nil, nil, is, time.Since(start))
 		})
-
-		err = wg.Wait()
-		debug.Log("err is %v", err)
-
 		if err != nil {
-			debug.Log("error while saving tree: %v", err)
 			return err
 		}
+
+		fnr := fn.take(wgCtx)
+		if fnr.err != nil {
+			return fnr.err
+		}
+		if wgCtx.Err() != nil {
+			return wgCtx.Err()
+		}
+		if nodeCount == 0 {
+			return errors.New("snapshot is empty")
+		}
+
+		rootTreeID = *fnr.node.Subtree
+		arch.stopWorkers()
 		return nil
 	})
+	err = wg.Wait()
+	debug.Log("err is %v", err)
 	if err != nil {
-		return nil, restic.ID{}, nil, err
+		debug.Log("error while saving tree: %v", err)
+		return nil, nil, err
 	}
 
 	if opts.ParentSnapshot != nil && opts.SkipIfUnchanged {
 		ps := opts.ParentSnapshot
 		if ps.Tree != nil && rootTreeID.Equal(*ps.Tree) {
 			arch.summary.BackupEnd = time.Now()
-			return nil, restic.ID{}, arch.summary, nil
+			return nil, arch.summary, nil
 		}
 	}
 
 	sn, err := data.NewSnapshot(targets, opts.Tags, opts.Hostname, opts.Time)
 	if err != nil {
-		return nil, restic.ID{}, nil, err
+		return nil, nil, err
 	}
 
 	sn.ProgramVersion = opts.ProgramVersion
@@ -981,10 +999,5 @@ func (arch *Archiver) Snapshot(ctx context.Context, targets []string, opts Snaps
 		TotalBytesProcessed: arch.summary.ProcessedBytes,
 	}
 
-	id, err := data.SaveSnapshot(ctx, arch.Repo, sn)
-	if err != nil {
-		return nil, restic.ID{}, nil, err
-	}
-
-	return sn, id, arch.summary, nil
+	return sn, arch.summary, nil
 }
