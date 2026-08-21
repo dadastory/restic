@@ -19,13 +19,11 @@ import (
 	"github.com/restic/restic/internal/archiver"
 	"github.com/restic/restic/internal/backend"
 	backendcache "github.com/restic/restic/internal/backend/cache"
-	"github.com/restic/restic/internal/backend/local"
-	"github.com/restic/restic/internal/backend/s3"
+	"github.com/restic/restic/internal/backend/rclonefs"
 	"github.com/restic/restic/internal/checker"
 	"github.com/restic/restic/internal/data"
 	"github.com/restic/restic/internal/dump"
 	"github.com/restic/restic/internal/fs"
-	"github.com/restic/restic/internal/options"
 	"github.com/restic/restic/internal/repository"
 	"github.com/restic/restic/internal/restic"
 	"github.com/restic/restic/internal/restorer"
@@ -1191,9 +1189,7 @@ func (s *Store) CopyAndVerifyBatch(ctx context.Context, destination *Store, requ
 			return CopyVerifyBatchResult{}, fmt.Errorf("copy verify batch contains duplicate snapshot")
 		}
 		seen[item.SnapshotID] = struct{}{}
-		if err := validatePayloadVerificationRequest(VerifySnapshotPayloadRequest{
-			SnapshotID: item.SnapshotID, ExpectedSize: item.ExpectedSize, ExpectedChecksum: item.ExpectedChecksum,
-		}); err != nil {
+		if err := validatePayloadVerificationRequest(VerifySnapshotPayloadRequest(item)); err != nil {
 			return CopyVerifyBatchResult{}, fmt.Errorf("invalid copy verify batch item")
 		}
 	}
@@ -1520,6 +1516,9 @@ func (s *Store) openRepository(ctx context.Context) (*repository.Repository, err
 }
 
 func (s *Store) openRepositoryWithConnections(ctx context.Context, connections uint) (*repository.Repository, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	be, err := s.backendWithConnections(ctx, false, connections)
 	if err != nil {
 		return nil, s.operationError("open provider", err)
@@ -1568,41 +1567,17 @@ func (s *Store) backend(ctx context.Context, create bool) (backend.Backend, erro
 }
 
 func (s *Store) backendWithConnections(ctx context.Context, create bool, connections uint) (backend.Backend, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if connections > 64 {
 		return nil, fmt.Errorf("provider connection concurrency exceeds typed limit")
 	}
-	switch s.config.Provider.Kind {
-	case ProviderLocal:
-		config := local.NewConfig()
-		config.Path = s.config.Provider.Local.Path
-		if connections > 0 {
-			config.Connections = connections
-		}
-		if create {
-			return local.Create(ctx, config, func(string, ...interface{}) {})
-		}
-		return local.Open(ctx, config, func(string, ...interface{}) {})
-	case ProviderS3:
-		provider := s.config.Provider.S3
-		config := s3.NewConfig()
-		config.Endpoint = provider.Endpoint
-		config.UseHTTP = provider.UseHTTP
-		config.Bucket = provider.Bucket
-		config.Prefix = provider.Prefix
-		config.Region = provider.Region
-		config.BucketLookup = "path"
-		config.KeyID = provider.AccessKey
-		config.Secret = options.NewSecretString(provider.SecretKey)
-		if connections > 0 {
-			config.Connections = connections
-		}
-		if create {
-			return s3.Create(ctx, config, provider.Transport, func(string, ...interface{}) {})
-		}
-		return s3.Open(ctx, config, provider.Transport, func(string, ...interface{}) {})
-	default:
-		return nil, fmt.Errorf("unsupported provider kind")
-	}
+	repositoryProvider := s.config.Provider.Repository
+	return rclonefs.Acquire(ctx, s.config.Provider.RuntimeIdentity, rclonefs.ProviderSnapshot{
+		Backend: repositoryProvider.Backend, Root: repositoryProvider.Root,
+		Options: repositoryProvider.Options,
+	}, create, connections)
 }
 
 func (s *Store) operationError(operation string, err error) error {
@@ -1626,21 +1601,24 @@ func operationErrorForStores(operation string, err error, stores ...*Store) erro
 
 func (s *Store) secrets() []string {
 	secrets := []string{s.config.RepositoryPassword}
-	if s.config.Provider.S3 != nil {
-		secrets = append(secrets, s.config.Provider.S3.AccessKey, s.config.Provider.S3.SecretKey)
+	if s.config.Provider.Repository != nil {
+		secrets = append(secrets, s.config.Provider.Repository.Root)
+		for _, value := range s.config.Provider.Repository.Options {
+			secrets = append(secrets, value)
+		}
 	}
 	return secrets
 }
 
 func cloneConfig(config Config) Config {
 	clone := config
-	if config.Provider.Local != nil {
-		local := *config.Provider.Local
-		clone.Provider.Local = &local
-	}
-	if config.Provider.S3 != nil {
-		s3 := *config.Provider.S3
-		clone.Provider.S3 = &s3
+	if config.Provider.Repository != nil {
+		repository := *config.Provider.Repository
+		repository.Options = make(map[string]string, len(config.Provider.Repository.Options))
+		for key, value := range config.Provider.Repository.Options {
+			repository.Options[key] = value
+		}
+		clone.Provider.Repository = &repository
 	}
 	return clone
 }

@@ -24,8 +24,8 @@ func TestIntegrityClassificationSeparatesAvailabilityFromVerifiedCorruption(t *t
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := classifyIntegrityCheckError(context.Background(), tt.err, IntegrityCodeCheckUnavailable)
-			failure, ok := err.(*IntegrityError)
-			if !ok {
+			failure := new(IntegrityError)
+			if !errors.As(err, &failure) {
 				t.Fatalf("expected *IntegrityError, got %T", err)
 			}
 			if failure.IntegrityCode() != tt.code || failure.IntegrityRetryable() != tt.retryable || failure.CorruptionVerified() != tt.corrupt {

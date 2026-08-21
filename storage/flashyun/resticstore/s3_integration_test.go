@@ -5,7 +5,6 @@ package resticstore
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
@@ -24,11 +23,7 @@ func TestS3StoreConcurrentBatchRestoreProfileAgainstMinIO(t *testing.T) {
 		t.Skip("FlashYun S3 facade integration environment is not configured")
 	}
 	store, err := New(Config{
-		Provider: Provider{Kind: ProviderS3, S3: &S3Provider{
-			Endpoint: endpoint, UseHTTP: true, Bucket: "flashyun-resticstore-test",
-			Prefix:    "archive-profile/" + time.Now().UTC().Format("20060102150405.000000000"),
-			AccessKey: accessKey, SecretKey: secretKey, Transport: http.DefaultTransport,
-		}},
+		Provider:           testS3Provider(endpoint, true, "flashyun-resticstore-test", "archive-profile/"+time.Now().UTC().Format("20060102150405.000000000"), "", accessKey, secretKey),
 		RepositoryPassword: "flashyun-resticstore-archive-profile-password",
 	})
 	if err != nil {
@@ -103,15 +98,7 @@ func TestS3StoreSnapshotsRestoresAndMeasuresAgainstMinIO(t *testing.T) {
 	}
 
 	store, err := New(Config{
-		Provider: Provider{Kind: ProviderS3, S3: &S3Provider{
-			Endpoint:  endpoint,
-			UseHTTP:   true,
-			Bucket:    "flashyun-resticstore-test",
-			Prefix:    "facade/" + time.Now().UTC().Format("20060102150405.000000000"),
-			AccessKey: accessKey,
-			SecretKey: secretKey,
-			Transport: http.DefaultTransport,
-		}},
+		Provider:           testS3Provider(endpoint, true, "flashyun-resticstore-test", "facade/"+time.Now().UTC().Format("20060102150405.000000000"), "", accessKey, secretKey),
 		RepositoryPassword: "flashyun-resticstore-integration-password",
 	})
 	if err != nil {
@@ -153,15 +140,7 @@ func TestS3StoreSnapshotsRestoresAndMeasuresAgainstMinIO(t *testing.T) {
 	}
 
 	destination, err := New(Config{
-		Provider: Provider{Kind: ProviderS3, S3: &S3Provider{
-			Endpoint:  endpoint,
-			UseHTTP:   true,
-			Bucket:    "flashyun-resticstore-test",
-			Prefix:    "facade-copy/" + time.Now().UTC().Format("20060102150405.000000000"),
-			AccessKey: accessKey,
-			SecretKey: secretKey,
-			Transport: http.DefaultTransport,
-		}},
+		Provider:           testS3Provider(endpoint, true, "flashyun-resticstore-test", "facade-copy/"+time.Now().UTC().Format("20060102150405.000000000"), "", accessKey, secretKey),
 		RepositoryPassword: "flashyun-resticstore-copy-password",
 	})
 	if err != nil {

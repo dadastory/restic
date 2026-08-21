@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -292,7 +291,7 @@ func TestStoreCreateOnlyCopySkipsUnrelatedDestinationSnapshotHistory(t *testing.
 	if err != nil {
 		t.Fatalf("destination Snapshot() error = %v", err)
 	}
-	root := destination.config.Provider.Local.Path
+	root := destination.config.Provider.Repository.Root
 	unrelatedMetadata := filepath.Join(root, "snapshots", unrelated.ID)
 	if err := os.Chmod(unrelatedMetadata, 0o600); err != nil {
 		t.Fatalf("make unrelated snapshot metadata writable: %v", err)
@@ -322,7 +321,7 @@ func TestStoreCopyReusesOfficialMetadataCacheWithoutCachingDataPacks(t *testing.
 	targetRoot := filepath.Join(t.TempDir(), "target-repository")
 	newCachedStore := func(root string) *Store {
 		store, err := New(Config{
-			Provider:           Provider{Kind: ProviderLocal, Local: &LocalProvider{Path: root}},
+			Provider:           testLocalProvider(root),
 			RepositoryPassword: "repository-password",
 			CacheDirectory:     cacheRoot,
 		})
@@ -667,9 +666,7 @@ func TestStoreVerifySnapshotsRejectsMissingSnapshot(t *testing.T) {
 func TestStoreOperationsRespectCanceledContextAndRedactSecrets(t *testing.T) {
 	t.Parallel()
 	store, err := New(Config{
-		Provider: Provider{Kind: ProviderS3, S3: &S3Provider{
-			Endpoint: "127.0.0.1:1", UseHTTP: true, Bucket: "flashyun", AccessKey: "access-secret", SecretKey: "secret-key", Transport: http.DefaultTransport,
-		}},
+		Provider:           testS3Provider("127.0.0.1:1", true, "flashyun", "", "", "access-secret", "secret-key"),
 		RepositoryPassword: "repository-secret",
 	})
 	if err != nil {
@@ -683,7 +680,9 @@ func TestStoreOperationsRespectCanceledContextAndRedactSecrets(t *testing.T) {
 	if _, err := store.ForgetPrune(canceled, RetentionRequest{KeepLast: 1}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("ForgetPrune(canceled) error = %v, want context canceled", err)
 	}
-	_, err = store.Stats(context.Background())
+	operationContext, stopOperation := context.WithTimeout(context.Background(), time.Second)
+	defer stopOperation()
+	_, err = store.Stats(operationContext)
 	if err == nil {
 		t.Fatal("Stats() error = nil")
 	}
@@ -717,7 +716,7 @@ func TestCopyErrorRedactsSourceAndDestinationSecrets(t *testing.T) {
 func newLocalStore(t *testing.T) *Store {
 	t.Helper()
 	store, err := New(Config{
-		Provider:           Provider{Kind: ProviderLocal, Local: &LocalProvider{Path: filepath.Join(t.TempDir(), "repo")}},
+		Provider:           testLocalProvider(filepath.Join(t.TempDir(), "repo")),
 		RepositoryPassword: "repository-password",
 	})
 	if err != nil {
@@ -741,7 +740,7 @@ func writeStagedFile(t *testing.T, name, contents string) string {
 func newSecretStore(t *testing.T, accessKey, secretKey, password string) *Store {
 	t.Helper()
 	store, err := New(Config{
-		Provider:           Provider{Kind: ProviderS3, S3: &S3Provider{Endpoint: "127.0.0.1:1", UseHTTP: true, Bucket: "flashyun", AccessKey: accessKey, SecretKey: secretKey, Transport: http.DefaultTransport}},
+		Provider:           testS3Provider("127.0.0.1:1", true, "flashyun", "", "", accessKey, secretKey),
 		RepositoryPassword: password,
 	})
 	if err != nil {

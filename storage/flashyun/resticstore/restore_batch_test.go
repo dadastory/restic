@@ -2,6 +2,7 @@ package resticstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -76,7 +77,7 @@ func TestRestoreSnapshotsBatchKeepsPerItemFailureIndependent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Items[0].Err != ErrRestoreBatchItemUnavailable {
+	if !errors.Is(result.Items[0].Err, ErrRestoreBatchItemUnavailable) {
 		t.Fatalf("missing snapshot item error = %v", result.Items[0].Err)
 	}
 	if _, err := os.Stat(items[0].DestinationPath); !os.IsNotExist(err) {

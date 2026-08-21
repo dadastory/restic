@@ -3,7 +3,7 @@ package resticstore
 import (
 	"context"
 	"crypto/rand"
-	"net/http"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,24 +13,16 @@ import (
 	"github.com/restic/restic/internal/restic"
 )
 
-func TestConfigValidateAcceptsTypedLocalAndS3Providers(t *testing.T) {
+func TestConfigValidateAcceptsCatalogValidatedLocalAndS3Providers(t *testing.T) {
 	t.Parallel()
 
 	for _, config := range []Config{
 		{
-			Provider:           Provider{Kind: ProviderLocal, Local: &LocalProvider{Path: t.TempDir()}},
+			Provider:           testLocalProvider(t.TempDir()),
 			RepositoryPassword: "repository-password",
 		},
 		{
-			Provider: Provider{Kind: ProviderS3, S3: &S3Provider{
-				Endpoint:  "127.0.0.1:9000",
-				UseHTTP:   true,
-				Bucket:    "flashyun",
-				Prefix:    "workspaces/workspace-1",
-				AccessKey: "access-key",
-				SecretKey: "secret-key",
-				Transport: http.DefaultTransport,
-			}},
+			Provider:           testS3Provider("127.0.0.1:9000", true, "flashyun", "workspaces/workspace-1", "", "access-key", "secret-key"),
 			RepositoryPassword: "repository-password",
 		},
 	} {
@@ -40,9 +32,66 @@ func TestConfigValidateAcceptsTypedLocalAndS3Providers(t *testing.T) {
 	}
 }
 
+func TestConfigValidateAcceptsGenericAdmittedProviderSnapshot(t *testing.T) {
+	t.Parallel()
+
+	config := Config{
+		Provider: Provider{RuntimeIdentity: "provider-a:7:runtime-2", Repository: &RepositoryProvider{
+			Backend: "s3",
+			Root:    "flashyun/workspaces/workspace-1",
+			Options: map[string]string{
+				"provider":          "Other",
+				"endpoint":          "http://127.0.0.1:9000",
+				"access_key_id":     "access-key",
+				"secret_access_key": "secret-key",
+				"force_path_style":  "true",
+			},
+		}},
+		RepositoryPassword: "repository-password",
+	}
+
+	if err := config.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	for _, backend := range AdmittedRepositoryBackends() {
+		if backend != "azureblob" && backend != "b2" && backend != "gcs" && backend != "local" && backend != "s3" && backend != "sftp" && backend != "webdav" {
+			t.Fatalf("unexpected admitted backend %q", backend)
+		}
+	}
+}
+
+func TestConfigValidateRejectsUnadmittedOrUnsafeGenericProvider(t *testing.T) {
+	t.Parallel()
+
+	for _, provider := range []Provider{
+		{Repository: &RepositoryProvider{Backend: "union", Root: "remote:path"}},
+		{Repository: &RepositoryProvider{Backend: "local", Root: t.TempDir(), Options: map[string]string{"config": "/tmp/rclone.conf"}}},
+		{},
+	} {
+		if err := (Config{Provider: provider, RepositoryPassword: "repository-password"}).Validate(); err == nil {
+			t.Fatalf("Validate() error = nil for %#v", provider)
+		}
+	}
+}
+
+func TestGenericProviderRedactionOmitsEveryRuntimeValue(t *testing.T) {
+	t.Parallel()
+
+	config := Config{Provider: Provider{Repository: &RepositoryProvider{
+		Backend: "s3", Root: "bucket/private-root",
+		Options: map[string]string{"endpoint": "https://private.example", "secret_access_key": "private-secret"},
+	}}, RepositoryPassword: "repository-password"}
+	serialized := config.Redacted().String()
+	for _, protected := range []string{"bucket/private-root", "private.example", "private-secret", "repository-password"} {
+		if strings.Contains(serialized, protected) {
+			t.Fatalf("redacted config exposed %q: %s", protected, serialized)
+		}
+	}
+}
+
 func TestConfigValidateAcceptsOnlyPrivateAbsoluteCacheRoot(t *testing.T) {
 	t.Parallel()
-	provider := Provider{Kind: ProviderLocal, Local: &LocalProvider{Path: filepath.Join(t.TempDir(), "repository")}}
+	provider := testLocalProvider(filepath.Join(t.TempDir(), "repository"))
 	valid := Config{Provider: provider, RepositoryPassword: "repository-password", CacheDirectory: filepath.Join(t.TempDir(), "restic-cache")}
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("Validate(absolute cache) error = %v", err)
@@ -61,11 +110,11 @@ func TestConfigValidateRejectsIncompleteOrAmbiguousProvider(t *testing.T) {
 
 	for _, config := range []Config{
 		{RepositoryPassword: "repository-password"},
-		{Provider: Provider{Kind: ProviderLocal}, RepositoryPassword: "repository-password"},
-		{Provider: Provider{Kind: ProviderS3, S3: &S3Provider{Endpoint: "https://s3.example.test", Bucket: "bucket", AccessKey: "a", SecretKey: "b"}}, RepositoryPassword: "repository-password"},
-		{Provider: Provider{Kind: ProviderS3, S3: &S3Provider{Endpoint: "s3.example.test", Bucket: "bucket", AccessKey: "a"}}, RepositoryPassword: "repository-password"},
-		{Provider: Provider{Kind: ProviderLocal, Local: &LocalProvider{Path: "relative/path"}}, RepositoryPassword: "repository-password"},
-		{Provider: Provider{Kind: ProviderLocal, Local: &LocalProvider{Path: t.TempDir()}}, RepositoryPassword: ""},
+		{Provider: Provider{}, RepositoryPassword: "repository-password"},
+		{Provider: Provider{Repository: &RepositoryProvider{Backend: "s3", Root: "bucket"}}, RepositoryPassword: "repository-password"},
+		{Provider: Provider{Repository: &RepositoryProvider{Backend: "union", Root: "remote:path"}}, RepositoryPassword: "repository-password"},
+		{Provider: testLocalProvider("relative/path"), RepositoryPassword: "repository-password"},
+		{Provider: testLocalProvider(t.TempDir()), RepositoryPassword: ""},
 	} {
 		if err := config.Validate(); err == nil {
 			t.Fatalf("Validate() error = nil for %#v", config.Provider)
@@ -77,19 +126,12 @@ func TestConfigRedactedDoesNotExposeSecrets(t *testing.T) {
 	t.Parallel()
 
 	config := Config{
-		Provider: Provider{Kind: ProviderS3, S3: &S3Provider{
-			Endpoint:  "127.0.0.1:9000",
-			UseHTTP:   true,
-			Bucket:    "flashyun",
-			Prefix:    "workspaces/workspace-1",
-			AccessKey: "access-key-value",
-			SecretKey: "secret-key-value",
-		}},
+		Provider:           testS3Provider("127.0.0.1:9000", true, "flashyun", "workspaces/workspace-1", "", "access-key-value", "secret-key-value"),
 		RepositoryPassword: "repository-password-value",
 	}
 
 	redacted := config.Redacted()
-	if redacted.Kind != ProviderS3 || redacted.Endpoint != "127.0.0.1:9000" || redacted.Bucket != "flashyun" {
+	if redacted.Backend != "s3" {
 		t.Fatalf("Redacted() = %#v", redacted)
 	}
 	serialized := redacted.String()
@@ -114,7 +156,7 @@ func TestStoreInitializesAndSnapshotsAStagedDirectory(t *testing.T) {
 	}
 
 	store, err := New(Config{
-		Provider:           Provider{Kind: ProviderLocal, Local: &LocalProvider{Path: repositoryPath}},
+		Provider:           testLocalProvider(repositoryPath),
 		RepositoryPassword: "repository-password",
 	})
 	if err != nil {
@@ -172,7 +214,7 @@ func TestStoreCheckReadsAndRejectsCorruptPackData(t *testing.T) {
 		t.Fatal(err)
 	}
 	store, err := New(Config{
-		Provider:           Provider{Kind: ProviderLocal, Local: &LocalProvider{Path: repositoryPath}},
+		Provider:           testLocalProvider(repositoryPath),
 		RepositoryPassword: "repository-password",
 	})
 	if err != nil {
@@ -189,7 +231,7 @@ func TestStoreCheckReadsAndRejectsCorruptPackData(t *testing.T) {
 
 	if err := store.Check(ctx); err == nil {
 		t.Fatal("Check() accepted physically corrupted pack data")
-	} else if failure, ok := err.(*IntegrityError); !ok || failure.IntegrityCode() != IntegrityCodeCorrupt || !failure.CorruptionVerified() || failure.IntegrityRetryable() {
+	} else if failure := new(IntegrityError); !errors.As(err, &failure) || failure.IntegrityCode() != IntegrityCodeCorrupt || !failure.CorruptionVerified() || failure.IntegrityRetryable() {
 		t.Fatalf("Check() corruption classification = %#v (%T)", err, err)
 	}
 }
@@ -199,7 +241,7 @@ func TestStoreCheckWaitsForAnActiveRepositoryReader(t *testing.T) {
 	defer cancel()
 	repositoryPath := filepath.Join(t.TempDir(), "repository")
 	store, err := New(Config{
-		Provider:           Provider{Kind: ProviderLocal, Local: &LocalProvider{Path: repositoryPath}},
+		Provider:           testLocalProvider(repositoryPath),
 		RepositoryPassword: "repository-password",
 	})
 	if err != nil {
@@ -249,7 +291,7 @@ func TestStoreRepairsCorruptPackFromHealthyCopy(t *testing.T) {
 	targetRepositoryPath := filepath.Join(t.TempDir(), "target-repository")
 	newLocalStore := func(path string) *Store {
 		store, err := New(Config{
-			Provider:           Provider{Kind: ProviderLocal, Local: &LocalProvider{Path: path}},
+			Provider:           testLocalProvider(path),
 			RepositoryPassword: "repository-password",
 		})
 		if err != nil {
@@ -323,7 +365,7 @@ func TestStoreRepairsTwoCorruptCopiesAndFailsClosedWhenAllCopiesAreCorrupt(t *te
 	newRepository := func(name string) repositoryFixture {
 		root := filepath.Join(t.TempDir(), name)
 		store, err := New(Config{
-			Provider:           Provider{Kind: ProviderLocal, Local: &LocalProvider{Path: root}},
+			Provider:           testLocalProvider(root),
 			RepositoryPassword: "repository-password",
 		})
 		if err != nil {
@@ -400,8 +442,8 @@ func assertCorruptIntegrityError(t *testing.T, err error) {
 	if err == nil {
 		t.Fatal("Check() accepted physically corrupted pack data")
 	}
-	failure, ok := err.(*IntegrityError)
-	if !ok || failure.IntegrityCode() != IntegrityCodeCorrupt || !failure.CorruptionVerified() || failure.IntegrityRetryable() {
+	failure := new(IntegrityError)
+	if !errors.As(err, &failure) || failure.IntegrityCode() != IntegrityCodeCorrupt || !failure.CorruptionVerified() || failure.IntegrityRetryable() {
 		t.Fatalf("Check() corruption classification = %#v (%T)", err, err)
 	}
 }

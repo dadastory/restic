@@ -112,7 +112,7 @@ func TestStoreReaderBatchRejectsBoundsBeforeOpeningSources(t *testing.T) {
 func TestStoreReaderBatchHonorsCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	store, err := New(Config{Provider: Provider{Kind: ProviderLocal, Local: &LocalProvider{Path: filepath.Join(t.TempDir(), "repository")}}, RepositoryPassword: "repository-password"})
+	store, err := New(Config{Provider: testLocalProvider(filepath.Join(t.TempDir(), "repository")), RepositoryPassword: "repository-password"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestReaderSnapshotPerformanceComparison(t *testing.T) {
 
 func initializedReaderStore(t *testing.T, repositoryPath string) *Store {
 	t.Helper()
-	store, err := New(Config{Provider: Provider{Kind: ProviderLocal, Local: &LocalProvider{Path: repositoryPath}}, RepositoryPassword: "repository-password"})
+	store, err := New(Config{Provider: testLocalProvider(repositoryPath), RepositoryPassword: "repository-password"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +254,7 @@ func TestStoreSnapshotsReopenableReaderWithoutCompleteWorkFile(t *testing.T) {
 	ctx := context.Background()
 	payload := []byte("FlashYun provider-staged reader payload")
 	repositoryPath := filepath.Join(t.TempDir(), "repository")
-	store, err := New(Config{Provider: Provider{Kind: ProviderLocal, Local: &LocalProvider{Path: repositoryPath}}, RepositoryPassword: "repository-password"})
+	store, err := New(Config{Provider: testLocalProvider(repositoryPath), RepositoryPassword: "repository-password"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +291,7 @@ func TestStoreSnapshotsReopenableReaderWithoutCompleteWorkFile(t *testing.T) {
 func TestStoreReusesReaderSnapshotForTheSameOperationKey(t *testing.T) {
 	ctx := context.Background()
 	payload := []byte("retry-safe provider payload")
-	store, err := New(Config{Provider: Provider{Kind: ProviderLocal, Local: &LocalProvider{Path: filepath.Join(t.TempDir(), "repository")}}, RepositoryPassword: "repository-password"})
+	store, err := New(Config{Provider: testLocalProvider(filepath.Join(t.TempDir(), "repository")), RepositoryPassword: "repository-password"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +326,7 @@ func TestStoreReusesReaderSnapshotForTheSameOperationKey(t *testing.T) {
 func TestStoreCreateOnlyReaderSnapshotDoesNotAdoptHistory(t *testing.T) {
 	ctx := context.Background()
 	payload := []byte("history-independent payload")
-	store, err := New(Config{Provider: Provider{Kind: ProviderLocal, Local: &LocalProvider{Path: filepath.Join(t.TempDir(), "repository")}}, RepositoryPassword: "repository-password"})
+	store, err := New(Config{Provider: testLocalProvider(filepath.Join(t.TempDir(), "repository")), RepositoryPassword: "repository-password"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,7 +352,7 @@ func TestStoreCreateOnlyReaderSnapshotDoesNotAdoptHistory(t *testing.T) {
 
 func TestStoreRejectsReaderWhoseObservedBytesDoNotMatch(t *testing.T) {
 	ctx := context.Background()
-	store, err := New(Config{Provider: Provider{Kind: ProviderLocal, Local: &LocalProvider{Path: filepath.Join(t.TempDir(), "repository")}}, RepositoryPassword: "repository-password"})
+	store, err := New(Config{Provider: testLocalProvider(filepath.Join(t.TempDir(), "repository")), RepositoryPassword: "repository-password"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,7 +370,7 @@ func TestStoreRejectsReaderWhoseObservedBytesDoNotMatch(t *testing.T) {
 
 func TestStoreRejectsReaderWhoseChecksumChangesAtTheSameSize(t *testing.T) {
 	ctx := context.Background()
-	store, err := New(Config{Provider: Provider{Kind: ProviderLocal, Local: &LocalProvider{Path: filepath.Join(t.TempDir(), "repository")}}, RepositoryPassword: "repository-password"})
+	store, err := New(Config{Provider: testLocalProvider(filepath.Join(t.TempDir(), "repository")), RepositoryPassword: "repository-password"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,7 +391,7 @@ func TestStoreRejectsReaderWhoseChecksumChangesAtTheSameSize(t *testing.T) {
 
 func TestStoreRejectsUnsafeReaderWriteConcurrency(t *testing.T) {
 	ctx := context.Background()
-	store, err := New(Config{Provider: Provider{Kind: ProviderLocal, Local: &LocalProvider{Path: filepath.Join(t.TempDir(), "repository")}}, RepositoryPassword: "repository-password"})
+	store, err := New(Config{Provider: testLocalProvider(filepath.Join(t.TempDir(), "repository")), RepositoryPassword: "repository-password"})
 	if err != nil {
 		t.Fatal(err)
 	}
