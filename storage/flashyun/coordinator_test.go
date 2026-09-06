@@ -5,9 +5,6 @@ import (
 	"errors"
 	"testing"
 	"time"
-
-	"github.com/casbin/casbin/v3"
-	"github.com/casbin/casbin/v3/model"
 )
 
 type testAuthorizer struct {
@@ -171,46 +168,30 @@ func TestCoordinatorPermitsAuthorizedMutation(t *testing.T) {
 	}
 }
 
-func TestCasbinAuthorizerUsesStableResourceObject(t *testing.T) {
+func TestAuthorizeReceivesStableResourceObject(t *testing.T) {
 	t.Parallel()
-
-	m, err := model.NewModelFromString(`
-[request_definition]
-r = sub, obj, act
-
-[policy_definition]
-p = sub, obj, act
-
-[policy_effect]
-e = some(where (p.eft == allow))
-
-[matchers]
-m = r.sub == p.sub && r.obj == p.obj && r.act == p.act
-`)
-	if err != nil {
-		t.Fatalf("NewModelFromString() error = %v", err)
-	}
-	enforcer, err := casbin.NewEnforcer(m)
-	if err != nil {
-		t.Fatalf("NewEnforcer() error = %v", err)
-	}
 
 	resource := Resource{Tenant: "tenant-a", Workspace: "workspace-a", File: "file-a"}
 	object, err := resource.Object()
 	if err != nil {
 		t.Fatalf("Object() error = %v", err)
 	}
-	if _, err := enforcer.AddPolicy("alice", object, "write"); err != nil {
-		t.Fatalf("AddPolicy() error = %v", err)
-	}
 
-	authorizer := CasbinAuthorizer{Enforcer: enforcer}
+	var receivedSubject, receivedObject, receivedAction string
+	authorizer := AuthorizerFunc(func(_ context.Context, subject, object, action string) (bool, error) {
+		receivedSubject, receivedObject, receivedAction = subject, object, action
+		return action == "write", nil
+	})
+
 	allowed, err := authorizer.Authorize(context.Background(), "alice", object, "write")
 	if err != nil {
 		t.Fatalf("Authorize() error = %v", err)
 	}
 	if !allowed {
 		t.Fatal("Authorize() denied the configured policy")
+	}
+	if receivedSubject != "alice" || receivedObject != object || receivedAction != "write" {
+		t.Fatalf("Authorize() received subject=%q object=%q action=%q, want the stable resource object", receivedSubject, receivedObject, receivedAction)
 	}
 
 	denied, err := authorizer.Authorize(context.Background(), "alice", object, "delete")

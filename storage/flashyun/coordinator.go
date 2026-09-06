@@ -8,8 +8,8 @@ import (
 )
 
 var (
-	// ErrAccessDenied is returned before a lease is acquired when Casbin denies
-	// a requested storage mutation.
+	// ErrAccessDenied is returned before a lease is acquired when the
+	// authorization boundary denies a requested storage mutation.
 	ErrAccessDenied = errors.New("flashyun storage access denied")
 	// ErrLeaseLost is returned when a held distributed file lease cannot be
 	// refreshed while protected work is running.

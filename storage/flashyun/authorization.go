@@ -1,34 +1,19 @@
 package flashyun
 
-import (
-	"context"
-	"errors"
-
-	"github.com/casbin/casbin/v3"
-)
+import "context"
 
 // Authorizer decides whether a subject may perform an action on a stable
-// FlashYun resource object.
+// FlashYun resource object. The storage data plane never consults policy
+// storage itself: it delegates the decision to the caller-supplied adapter,
+// which forwards to Identity's authorization RPC.
 type Authorizer interface {
 	Authorize(ctx context.Context, subject, object, action string) (bool, error)
 }
 
-// CasbinEnforcer is the portion of a Casbin enforcer used by this package.
-type CasbinEnforcer interface {
-	Enforce(rvals ...interface{}) (bool, error)
-}
+// AuthorizerFunc adapts a function to the Authorizer interface.
+type AuthorizerFunc func(ctx context.Context, subject, object, action string) (bool, error)
 
-// CasbinAuthorizer adapts Casbin to the storage authorization boundary.
-type CasbinAuthorizer struct {
-	Enforcer CasbinEnforcer
-}
-
-var _ CasbinEnforcer = (*casbin.Enforcer)(nil)
-
-// Authorize evaluates the configured Casbin policy.
-func (a CasbinAuthorizer) Authorize(_ context.Context, subject, object, action string) (bool, error) {
-	if a.Enforcer == nil {
-		return false, errors.New("flashyun storage Casbin enforcer is required")
-	}
-	return a.Enforcer.Enforce(subject, object, action)
+// Authorize calls the wrapped function.
+func (f AuthorizerFunc) Authorize(ctx context.Context, subject, object, action string) (bool, error) {
+	return f(ctx, subject, object, action)
 }
