@@ -29,7 +29,7 @@ require (
 	github.com/pkg/profile v1.7.0
 	github.com/pkg/sftp v1.13.11
 	github.com/pkg/xattr v0.4.12
-	github.com/rclone/rclone v1.69.1
+	github.com/rclone/rclone v1.75.0
 	github.com/redis/go-redis/v9 v9.22.0
 	github.com/restic/chunker v0.5.0
 	github.com/spf13/cobra v1.10.2
