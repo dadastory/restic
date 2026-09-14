@@ -168,6 +168,37 @@ func TestCoordinatorPermitsAuthorizedMutation(t *testing.T) {
 	}
 }
 
+func TestCoordinatorSerializesPreauthorizedMutationWithoutRepeatingAuthorization(t *testing.T) {
+	t.Parallel()
+
+	authorizer := &testAuthorizer{}
+	locker := &testLeaseLocker{}
+	coordinator, err := NewCoordinator(authorizer, locker, CoordinatorConfig{})
+	if err != nil {
+		t.Fatalf("NewCoordinator() error = %v", err)
+	}
+
+	mutated := false
+	err = coordinator.WithLease(context.Background(), Resource{
+		Tenant: "tenant-a", Workspace: "workspace-a", File: "file-a",
+	}, func(context.Context) error {
+		mutated = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WithLease() error = %v", err)
+	}
+	if authorizer.calls != 0 {
+		t.Fatalf("authorizer calls = %d, want 0 for a preauthorized mutation", authorizer.calls)
+	}
+	if locker.acquireCalls != 1 {
+		t.Fatalf("lease acquisitions = %d, want 1", locker.acquireCalls)
+	}
+	if !mutated {
+		t.Fatal("preauthorized mutation did not run under the lease")
+	}
+}
+
 func TestAuthorizeReceivesStableResourceObject(t *testing.T) {
 	t.Parallel()
 

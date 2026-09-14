@@ -114,8 +114,21 @@ func (c *Coordinator) Mutate(ctx context.Context, request Request, mutation func
 	if !allowed {
 		return ErrAccessDenied
 	}
+	return c.WithLease(ctx, request.Resource, mutation)
+}
 
-	lease, err := c.locker.Acquire(ctx, request.Resource)
+// WithLease serializes a mutation whose authorization and resource association
+// were already verified by the caller's durable control plane. It shares the
+// same renewable lease implementation as Mutate without repeating a remote
+// authorization decision after a command has been durably admitted.
+func (c *Coordinator) WithLease(ctx context.Context, resource Resource, mutation func(context.Context) error) error {
+	if c == nil || c.locker == nil || mutation == nil {
+		return errors.New("flashyun storage lease mutation is required")
+	}
+	if err := resource.Validate(); err != nil {
+		return err
+	}
+	lease, err := c.locker.Acquire(ctx, resource)
 	if err != nil {
 		return fmt.Errorf("acquire file lease: %w", err)
 	}
