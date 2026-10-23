@@ -122,7 +122,9 @@ func (s *fileChunkState) readNextChunk(rd io.Reader, chnker restic.Chunker, data
 		if s.bpos >= s.bmax {
 			n, err := io.ReadFull(rd, s.readBuf)
 
-			if err == io.ErrUnexpectedEOF {
+			// ReadFull uses unexpected EOF for an ordinary short final buffer,
+			// but the source can also return it without making any progress.
+			if err == io.ErrUnexpectedEOF && n > 0 {
 				err = nil
 			}
 

@@ -1271,6 +1271,9 @@ func (s *Store) ForgetPrune(ctx context.Context, request RetentionRequest) (Rete
 	if len(request.ForgetSnapshotIDs) > 0 {
 		available := restic.NewIDSet()
 		for _, snapshot := range snapshots {
+			if requested.Has(*snapshot.ID()) && snapshot.HasTags([]string{uploadCheckpointTag}) {
+				return RetentionResult{}, fmt.Errorf("upload checkpoint is protected from ordinary retention")
+			}
 			available.Insert(*snapshot.ID())
 		}
 		for id := range requested {
@@ -1283,25 +1286,30 @@ func (s *Store) ForgetPrune(ctx context.Context, request RetentionRequest) (Rete
 		// persisted its application-level completion marker.
 		result.ForgottenSnapshots = uint64(len(requested))
 	} else {
-		if uint64(len(snapshots)) <= request.KeepLast {
-			return result, lockedCtx.Err()
-		}
-		for _, snapshot := range snapshots[request.KeepLast:] {
-			if !protected.Has(*snapshot.ID()) {
+		var retained uint64
+		for _, snapshot := range snapshots {
+			// Upload roots belong to the upload lifecycle, not file retention.
+			// They also must not consume the ordinary KeepLast allowance.
+			if snapshot.HasTags([]string{uploadCheckpointTag}) {
+				continue
+			}
+			retained++
+			if retained > request.KeepLast && !protected.Has(*snapshot.ID()) {
 				remove.Insert(*snapshot.ID())
 			}
 		}
 	}
-	if len(remove) == 0 {
-		return result, lockedCtx.Err()
-	}
-	if err := restic.ParallelRemove(lockedCtx, repo, remove, restic.WriteableSnapshotFile, nil, restic.NoopCounter); err != nil {
-		return RetentionResult{}, s.operationError("forget expired snapshots", err)
+	if len(remove) != 0 {
+		if err := restic.ParallelRemove(lockedCtx, repo, remove, restic.WriteableSnapshotFile, nil, restic.NoopCounter); err != nil {
+			return RetentionResult{}, s.operationError("forget expired snapshots", err)
+		}
 	}
 	result.KeptSnapshots = uint64(len(snapshots)) - uint64(len(remove))
 	if len(request.ForgetSnapshotIDs) == 0 {
 		result.ForgottenSnapshots = uint64(len(remove))
 	}
+	// Interrupted writes and a previous forget attempt can leave unused packs
+	// even when this attempt has no snapshots to remove.
 	if err := s.prune(lockedCtx, repo); err != nil {
 		return RetentionResult{}, err
 	}
@@ -1351,13 +1359,19 @@ func (s *Store) Check(ctx context.Context) error {
 		return classifyIntegrityCheckError(lockedCtx, err, IntegrityCodeCheckUnavailable)
 	}
 	hints, errs := check.LoadIndex(lockedCtx, restic.NoopTerminalCounterFactory)
-	if len(hints) != 0 || len(errs) != 0 {
-		return classifyIntegrityCheckError(lockedCtx, firstCheckError(hints, errs), IntegrityCodeCheckUnavailable)
+	if err := firstCheckError(hints, errs); err != nil {
+		return classifyIntegrityCheckError(lockedCtx, err, IntegrityCodeCheckUnavailable)
 	}
 	packErrors := make(chan error)
 	go check.Packs(lockedCtx, packErrors)
 	var firstPackError error
 	for checkErr := range packErrors {
+		var packMetadata *repository.ErrPackMetadata
+		if errors.As(checkErr, &packMetadata) && packMetadata.Orphaned {
+			// Like native check, leave unindexed leftovers to native prune and
+			// continue verifying every referenced pack and snapshot.
+			continue
+		}
 		if firstPackError == nil {
 			firstPackError = checkErr
 		}
@@ -1442,7 +1456,7 @@ func classifyIntegrityCheckError(ctx context.Context, err error, fallback string
 func verifiedIntegrityCorruption(err error) bool {
 	var packMetadata *repository.ErrPackMetadata
 	if errors.As(err, &packMetadata) {
-		return true
+		return !packMetadata.Orphaned
 	}
 	var packData *repository.ErrPackData
 	if errors.As(err, &packData) {
@@ -1480,8 +1494,8 @@ func (s *Store) RepairCorruptPacks(ctx context.Context) error {
 		return s.operationError("load snapshots for pack repair", err)
 	}
 	hints, indexErrors := check.LoadIndex(lockedCtx, restic.NoopTerminalCounterFactory)
-	if len(hints) != 0 || len(indexErrors) != 0 {
-		return s.operationError("load repository index for pack repair", firstCheckError(hints, indexErrors))
+	if err := firstCheckError(hints, indexErrors); err != nil {
+		return s.operationError("load repository index for pack repair", err)
 	}
 	dataErrors := make(chan error)
 	go check.ReadPacks(lockedCtx, func(packs map[restic.ID]int64) map[restic.ID]int64 {
@@ -1627,10 +1641,17 @@ func firstCheckError(hints, errs []error) error {
 	if len(errs) != 0 {
 		return errs[0]
 	}
-	if len(hints) != 0 {
-		return hints[0]
+	for _, hint := range hints {
+		// Match native check: duplicate indexes and mixed packs only suggest
+		// maintenance. Incomplete indexes and unknown hints remain failures.
+		var duplicate *repository.ErrDuplicatePacks
+		var mixed *repository.ErrMixedPack
+		if errors.As(hint, &duplicate) || errors.As(hint, &mixed) {
+			continue
+		}
+		return hint
 	}
-	return fmt.Errorf("repository check failed")
+	return nil
 }
 
 func acquireInitializationPermit(ctx context.Context, permit <-chan struct{}) error {
