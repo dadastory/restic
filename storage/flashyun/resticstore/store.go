@@ -1610,7 +1610,7 @@ func operationErrorForStores(operation string, err error, stores ...*Store) erro
 			}
 		}
 	}
-	return fmt.Errorf("resticstore %s: %s", operation, message)
+	return newOperationError(fmt.Sprintf("resticstore %s: %s", operation, message), err)
 }
 
 func (s *Store) secrets() []string {
