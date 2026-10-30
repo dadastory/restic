@@ -264,6 +264,12 @@ func TestUploadNativeLocksProtectCheckpointCommitAndOpenReader(t *testing.T) {
 	if err := store.CleanupUpload(t.Context(), "locked-upload"); err == nil {
 		t.Fatal("cleanup ran while a prefix reader was open")
 	}
+	if _, err := store.AppendUpload(t.Context(), UploadAppendRequest{
+		UploadID: "parallel-upload", ExpectedSize: 5, CheckpointBytes: 1 << 20,
+		Source: bytes.NewBufferString("other"), Commit: acceptUpload,
+	}); err != nil {
+		t.Fatalf("append while an independent reader holds a shared lock: %v", err)
+	}
 	if err := reader.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -274,6 +280,36 @@ func TestUploadNativeLocksProtectCheckpointCommitAndOpenReader(t *testing.T) {
 	assertUploadBytes(t, store, "locked-upload", head, []byte("payload"))
 	if err := store.CleanupUpload(t.Context(), "locked-upload"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCancelledUploadReaderClosesAndReleasesNativeLock(t *testing.T) {
+	store := initializedReaderStore(t, filepath.Join(t.TempDir(), "repository"))
+	head, err := store.AppendUpload(t.Context(), UploadAppendRequest{
+		UploadID: "cancelled-reader", ExpectedSize: 7, CheckpointBytes: 1 << 20,
+		Source: bytes.NewBufferString("payload"), Commit: acceptUpload,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	reader, _, err := store.OpenUpload(ctx, "cancelled-reader", head.SnapshotID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	if _, err := reader.Read(make([]byte, 1)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("read after cancellation: %v", err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatalf("repeated close: %v", err)
+	}
+	if err := store.CleanupUpload(t.Context(), "cancelled-reader"); err != nil {
+		t.Fatalf("exclusive cleanup after cancelled reader closed: %v", err)
 	}
 }
 

@@ -276,16 +276,16 @@ func (s *Store) SnapshotReadersBatch(ctx context.Context, request ReaderSnapshot
 	}
 	defer func() { _ = repo.Close() }()
 	s.observeReaderBatch("repository_opened")
-	if err := repo.LoadIndex(ctx, restic.NoopTerminalCounterFactory); err != nil {
-		return results, s.operationError("load repository index", err)
-	}
-	s.observeReaderBatch("index_loaded")
-	unlock, lockedCtx, err := repository.LockRepo(ctx, repo, false, 0, func(string) {}, func(string, ...interface{}) {})
+	unlock, lockedCtx, err := lockRepository(ctx, repo, false, 0)
 	if err != nil {
 		return results, s.operationError("acquire repository append lock", err)
 	}
 	defer unlock()
 	s.observeReaderBatch("repository_locked")
+	if err := repo.LoadIndex(lockedCtx, restic.NoopTerminalCounterFactory); err != nil {
+		return results, s.operationError("load repository index", err)
+	}
+	s.observeReaderBatch("index_loaded")
 
 	resolved := make([]bool, len(request.Items))
 	if hasReconcileReaderItem(request.Items) {
@@ -502,14 +502,14 @@ func (s *Store) snapshotFilesystem(ctx context.Context, filesystem fs.FS, target
 		return SnapshotResult{}, err
 	}
 	defer func() { _ = repo.Close() }()
-	if err := repo.LoadIndex(ctx, restic.NoopTerminalCounterFactory); err != nil {
-		return SnapshotResult{}, s.operationError("load repository index", err)
-	}
-	unlock, lockedCtx, err := repository.LockRepo(ctx, repo, false, 0, func(string) {}, func(string, ...interface{}) {})
+	unlock, lockedCtx, err := lockRepository(ctx, repo, false, 0)
 	if err != nil {
 		return SnapshotResult{}, s.operationError("acquire repository append lock", err)
 	}
 	defer unlock()
+	if err := repo.LoadIndex(lockedCtx, restic.NoopTerminalCounterFactory); err != nil {
+		return SnapshotResult{}, s.operationError("load repository index", err)
+	}
 	now := snapshotTime(request.SnapshotTime)
 	archive := archiver.New(repo, filesystem, archiver.Options{ReadConcurrency: request.ReadConcurrency})
 	archive.Error = func(_ string, err error) error { return err }
@@ -730,15 +730,14 @@ func (s *Store) Snapshot(ctx context.Context, request SnapshotRequest) (Snapshot
 		return SnapshotResult{}, err
 	}
 	defer func() { _ = repo.Close() }()
-	if err := repo.LoadIndex(ctx, restic.NoopTerminalCounterFactory); err != nil {
-		return SnapshotResult{}, s.operationError("load repository index", err)
-	}
-
-	unlock, lockedCtx, err := repository.LockRepo(ctx, repo, false, 0, func(string) {}, func(string, ...interface{}) {})
+	unlock, lockedCtx, err := lockRepository(ctx, repo, false, 0)
 	if err != nil {
 		return SnapshotResult{}, s.operationError("acquire repository append lock", err)
 	}
 	defer unlock()
+	if err := repo.LoadIndex(lockedCtx, restic.NoopTerminalCounterFactory); err != nil {
+		return SnapshotResult{}, s.operationError("load repository index", err)
+	}
 
 	now := request.SnapshotTime
 	if now.IsZero() {
@@ -797,7 +796,7 @@ func (s *Store) Restore(ctx context.Context, request RestoreRequest) error {
 		return err
 	}
 	defer func() { _ = repo.Close() }()
-	unlock, lockedCtx, err := repository.LockRepo(ctx, repo, false, 0, func(string) {}, func(string, ...interface{}) {})
+	unlock, lockedCtx, err := lockRepository(ctx, repo, false, 0)
 	if err != nil {
 		return s.operationError("acquire repository read lock", err)
 	}
@@ -858,7 +857,7 @@ func (s *Store) RestoreSnapshotsBatch(ctx context.Context, request RestoreBatchR
 	}
 	defer func() { _ = repo.Close() }()
 	s.observeRestoreBatch("repository_opened")
-	unlock, lockedCtx, err := repository.LockRepo(ctx, repo, false, 0, func(string) {}, func(string, ...interface{}) {})
+	unlock, lockedCtx, err := lockRepository(ctx, repo, false, 0)
 	if err != nil {
 		return result, s.operationError("acquire repository read lock", err)
 	}
@@ -919,8 +918,7 @@ func (s *Store) VerifySnapshotPayload(ctx context.Context, request VerifySnapsho
 	if err != nil {
 		return PayloadVerification{}, err
 	}
-	defer unlock()
-	defer func() { _ = repo.Close() }()
+	defer func() { unlock(); _ = repo.Close() }()
 	if err := repo.LoadIndex(lockedCtx, restic.NoopTerminalCounterFactory); err != nil {
 		return PayloadVerification{}, s.operationError("load repository index", err)
 	}
@@ -1009,8 +1007,7 @@ func (s *Store) VerifySnapshots(ctx context.Context, snapshotIDs []string) error
 	if err != nil {
 		return err
 	}
-	defer unlock()
-	defer func() { _ = repo.Close() }()
+	defer func() { unlock(); _ = repo.Close() }()
 	if err := repo.LoadIndex(lockedCtx, restic.NoopTerminalCounterFactory); err != nil {
 		return s.operationError("load repository index", err)
 	}
@@ -1258,8 +1255,7 @@ func (s *Store) ForgetPrune(ctx context.Context, request RetentionRequest) (Rete
 	if err != nil {
 		return RetentionResult{}, err
 	}
-	defer unlock()
-	defer func() { _ = repo.Close() }()
+	defer func() { unlock(); _ = repo.Close() }()
 
 	snapshots, err := selectedSnapshots(lockedCtx, repo, nil)
 	if err != nil {
@@ -1322,8 +1318,7 @@ func (s *Store) Stats(ctx context.Context) (StatsResult, error) {
 	if err != nil {
 		return StatsResult{}, err
 	}
-	defer unlock()
-	defer func() { _ = repo.Close() }()
+	defer func() { unlock(); _ = repo.Close() }()
 
 	result := StatsResult{}
 	for _, fileType := range []restic.FileType{restic.PackFile, restic.SnapshotFile, restic.IndexFile, restic.KeyFile} {
@@ -1351,8 +1346,7 @@ func (s *Store) Check(ctx context.Context) error {
 	if err != nil {
 		return classifyIntegrityCheckError(ctx, err, IntegrityCodeOpenUnavailable)
 	}
-	defer unlock()
-	defer func() { _ = repo.Close() }()
+	defer func() { unlock(); _ = repo.Close() }()
 
 	check := checker.New(repo, false)
 	if err := check.LoadSnapshots(lockedCtx, &data.SnapshotFilter{}, nil); err != nil {
@@ -1426,7 +1420,7 @@ func (s *Store) openLockedRepositoryForIntegrity(ctx context.Context) (*reposito
 		_ = repo.Close()
 		return nil, nil, nil, err
 	}
-	unlock, lockedCtx, err := repository.LockRepo(ctx, repo, true, integrityLockRetryTimeout, func(string) {}, func(string, ...interface{}) {})
+	unlock, lockedCtx, err := lockRepository(ctx, repo, true, integrityLockRetryTimeout)
 	if err != nil {
 		_ = repo.Close()
 		return nil, nil, nil, err
@@ -1486,8 +1480,7 @@ func (s *Store) RepairCorruptPacks(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer unlock()
-	defer func() { _ = repo.Close() }()
+	defer func() { unlock(); _ = repo.Close() }()
 
 	check := checker.New(repo, false)
 	if err := check.LoadSnapshots(lockedCtx, &data.SnapshotFilter{}, nil); err != nil {
@@ -1568,12 +1561,25 @@ func (s *Store) openLockedRepositoryWithConnections(ctx context.Context, exclusi
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	unlock, lockedCtx, err := repository.LockRepo(ctx, repo, exclusive, 0, func(string) {}, func(string, ...interface{}) {})
+	unlock, lockedCtx, err := lockRepository(ctx, repo, exclusive, 0)
 	if err != nil {
 		_ = repo.Close()
 		return nil, nil, nil, s.operationError("acquire repository lock", err)
 	}
 	return repo, lockedCtx, unlock, nil
+}
+
+func lockRepository(ctx context.Context, repo *repository.Repository, exclusive bool, retryLock time.Duration) (func(), context.Context, error) {
+	unlock, lockedCtx, err := repository.LockRepo(ctx, repo, exclusive, 0, func(string) {}, func(string, ...interface{}) {})
+	if !repository.IsAlreadyLocked(err) {
+		return unlock, lockedCtx, err
+	}
+	// A crashed owner cannot release its lock. Only native stale/dead-process
+	// detection may remove it; live readers and appenders remain protected.
+	if _, err := repository.RemoveStaleLocks(ctx, repo); err != nil {
+		return nil, ctx, err
+	}
+	return repository.LockRepo(ctx, repo, exclusive, retryLock, func(string) {}, func(string, ...interface{}) {})
 }
 
 func (s *Store) backend(ctx context.Context, create bool) (backend.Backend, error) {
