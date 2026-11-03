@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/restic/restic/internal/data"
@@ -335,13 +334,16 @@ func (s *Store) OpenUpload(ctx context.Context, uploadID, snapshotID string) (io
 	if err != nil {
 		return nil, 0, err
 	}
+	ctx, cancel := context.WithCancel(ctx)
 	repo, lockedCtx, unlock, err := s.openLockedRepository(ctx, false)
 	if err != nil {
+		cancel()
 		return nil, 0, err
 	}
+	release := func() error { unlock(); return repo.Close() }
 	fail := func(err error) (io.ReadCloser, int64, error) {
-		unlock()
-		_ = repo.Close()
+		cancel()
+		_ = release()
 		return nil, 0, s.operationError("open upload prefix", err)
 	}
 	if err := repo.LoadIndex(lockedCtx, restic.NoopTerminalCounterFactory); err != nil {
@@ -351,61 +353,19 @@ func (s *Store) OpenUpload(ctx context.Context, uploadID, snapshotID string) (io
 	if err != nil {
 		return fail(err)
 	}
-	return &uploadPayloadReader{store: s, repo: repo, ctx: lockedCtx, content: node.Content, unlock: unlock}, int64(node.Size), nil
+	payload, err := s.newPayloadReader(lockedCtx, repo, node, int64(node.Size), cancel, release)
+	if err != nil {
+		return fail(err)
+	}
+	return &uploadRangeReader{SectionReader: io.NewSectionReader(payload, 0, payload.Size()), payload: payload}, payload.Size(), nil
 }
 
-type uploadPayloadReader struct {
-	store   *Store
-	repo    *repository.Repository
-	ctx     context.Context
-	content []restic.ID
-	buffer  []byte
-	unload  []byte
-	unlock  func()
-	mutex   sync.Mutex
-	closed  bool
+type uploadRangeReader struct {
+	*io.SectionReader
+	payload *SnapshotPayload
 }
 
-func (r *uploadPayloadReader) Read(p []byte) (int, error) {
-	r.mutex.Lock()
-	defer r.mutex.Unlock()
-	if r.closed {
-		return 0, io.ErrClosedPipe
-	}
-	if len(p) == 0 {
-		return 0, nil
-	}
-	if err := r.ctx.Err(); err != nil {
-		return 0, err
-	}
-	if len(r.buffer) == 0 {
-		if len(r.content) == 0 {
-			return 0, io.EOF
-		}
-		buf, err := r.repo.LoadBlob(r.ctx, restic.BlobHandle{Type: restic.DataBlob, ID: r.content[0]}, r.unload)
-		if err != nil {
-			return 0, r.store.operationError("read upload payload", err)
-		}
-		r.buffer, r.unload, r.content = buf, buf[:0], r.content[1:]
-	}
-	n := copy(p, r.buffer)
-	r.buffer = r.buffer[n:]
-	return n, nil
-}
-
-func (r *uploadPayloadReader) Close() error {
-	r.mutex.Lock()
-	defer r.mutex.Unlock()
-	if r.closed {
-		return nil
-	}
-	r.closed = true
-	r.unlock()
-	if err := r.repo.Close(); err != nil {
-		return r.store.operationError("close upload payload", err)
-	}
-	return nil
-}
+func (reader *uploadRangeReader) Close() error { return reader.payload.Close() }
 
 // UploadChecksum returns the server-computed checksum for one complete, owned
 // checkpoint using authenticated snapshot/tree/hash metadata. It neither reads
